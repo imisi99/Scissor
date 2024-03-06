@@ -1,5 +1,5 @@
 from .database import data
-from sqlalchemy import Column, String, Integer, ForeignKey, Float, DateTime, JSON
+from sqlalchemy import Column, String, Integer, ForeignKey, Float, DateTime, JSON, LargeBinary
 from sqlalchemy.orm import relationship
 
 class User(data):
@@ -22,7 +22,8 @@ class Link(data):
     id = Column(Integer, primary_key= True, index= True)
     link = Column(String, nullable= False)
     short_link = Column(String, nullable= False)
-    qrcode = Column(String, nullable= True)
+    custom_link = Column(String, nullable= True)
+    qrcode = Column(LargeBinary, nullable= True)
     clicks = Column(Integer, nullable= False, default= 0)
     user_id = Column(Integer, ForeignKey("User.id"))
     last_clicked = Column(DateTime, nullable= True)
