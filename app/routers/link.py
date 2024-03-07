@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends,HTTPException, Body, Request, Path
 from pydantic import BaseModel
-from sqlalchemy import JSON
+from sqlalchemy import JSON, or_
 from ..schemas.database import begin
 from typing import Annotated, Optional
 from sqlalchemy.orm import Session
 from ..schemas.model_db import Link
 from starlette import status
-from .user import user_dependency
+from .user import get_user
 from datetime import datetime
 from io import BytesIO
 from fastapi.responses import StreamingResponse, RedirectResponse
@@ -14,6 +14,7 @@ from ipwhois import IPWhois
 import validators
 from cachetools import TTLCache, cached 
 import hashlib
+from urllib.parse import urlunparse, urlparse
 import qrcode
 import socket
 
@@ -36,7 +37,7 @@ def get_db():
         db.close()
 
 db_dependency = Annotated[Session, Depends(get_db)]
-
+user_dependency = Annotated[str, Depends(get_user)]
 #Url validation and shortening
 def validate_url(url):
     return validators.url(url)
@@ -70,9 +71,9 @@ def generate_qr_code( url : str) -> bytes:
 cache = TTLCache(maxsize= 300, ttl= 300)
 
 #Url shortening
-@link.post("/shorten-link", status_code= status.HTTP_200_OK, response_description= {200 : {'description' : 'The user is requesting to shorten the link'}})
+@link.post("/shorten-link", status_code= status.HTTP_201_CREATED, response_description= {201 : {'description' : 'The user is requesting to shorten the link'}})
 # @cached(cache, key = lambda user, db, url_link: user.get('user_id'))
-async def shorten_link(user : user_dependency, db: db_dependency, url_link: str = Body()):
+async def shorten_link(user : user_dependency, db: db_dependency, url_link: str):
     if not user:
         raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
     
@@ -103,10 +104,10 @@ async def getting_original_link(user : user_dependency, db : db_dependency, shor
     if not user:
         raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
     
-    url_link = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(Link.short_link == shortened_url_link).first()
+    url_link = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(or_(Link.custom_link == shortened_url_link, Link.short_link == shortened_url_link)).first()
 
     if url_link is None:
-        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Shortened link has no original link")
+        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "The link that you provided has no original link linked to it")
     
     return url_link.link
 
@@ -128,14 +129,18 @@ async def link_history(user: user_dependency, db: db_dependency):
 
 #Customizing url
 @link.put("/shorten-link/customize", status_code= status.HTTP_201_CREATED, response_description= {201 : {'description' : 'The user is requesting the customize the shortenened version of the link'}})
-async def customize_url(user : user_dependency, db: db_dependency, shortened_url : str, custom_url : str = Body()):
+async def customize_url(user : user_dependency, db: db_dependency, shortened_url : str, domain_name : str = Body()):
     if not user:
         raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
     
     url_link = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(Link.short_link == shortened_url).first()
 
     if not url_link:
-        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Shortened link not found")
+        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Invalid link")
+    
+    parsed_url = urlparse(shortened_url)
+
+    custom_url = urlunparse((parsed_url.scheme, domain_name, parsed_url.path, parsed_url.params, parsed_url.query, parsed_url.fragment))
 
     existing_url = db.query(Link).filter(Link.custom_link == custom_url).first()
     if existing_url:
@@ -157,10 +162,10 @@ async def generate_Qr_code_image(user : user_dependency, db: db_dependency, shor
     if not user:
         raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
     
-    url = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(Link.short_link == shortened_url).first()
+    url = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(or_(Link.custom_link == shortened_url, Link.short_link == shortened_url)).first()
 
     if not url:
-        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Shortened link not found")
+        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Invalid link!")
     
     qr_code = generate_qr_code(url.link)
 
@@ -169,7 +174,7 @@ async def generate_Qr_code_image(user : user_dependency, db: db_dependency, shor
     db.commit()
     db.refresh(url)
 
-    return "The qrcode for this link has been generated successfully."
+    return "The Qrcode for this link has been generated successfully."
 
 #get qrcode
 @link.get("/qrcode", status_code= status.HTTP_200_OK, response_description= {200 :{'description' : 'The user is requesting for already generated qrcode for shortened url'}})
@@ -177,10 +182,10 @@ async def get_qr_code(user : user_dependency, db : db_dependency, shortened_url 
     if not user:
         raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthoorized user")
     
-    url = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(Link.short_link == shortened_url).first()
+    url = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(or_(Link.custom_link == shortened_url, Link.short_link == shortened_url)).first()
 
     if not url:
-        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Shortened link not found")
+        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Invalid link!")
 
     qr_present = url.qrcode
 
@@ -195,9 +200,9 @@ async def get_qr_code(user : user_dependency, db : db_dependency, shortened_url 
 #Ananlyzing
 @link.get("/analysis/", status_code= status.HTTP_302_FOUND, response_description= {302 : {'description' : 'This endpoint is used to redirect the shortened link to menitor the clicks aspect'}})
 async def redirect_to_original(db: db_dependency, shortened_url : str , request : Request):
-    url = db.query(Link).filter(Link.short_link == shortened_url).first()
+    url = db.query(Link).filter(or_(Link.short_link == shortened_url, Link.custom_link == shortened_url)).first()
     if not url:
-        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Shortened link not found")
+        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Invalid link")
     
     url.clicks += 1
     url.last_clicked = datetime.utcnow()
@@ -229,10 +234,10 @@ async def redirect_to_original(db: db_dependency, shortened_url : str , request 
 async def analysis_for_link(db: db_dependency, user : user_dependency, shortened_url : str ):
     if not user:
         raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
-    url = db.query(Link).filter(Link.short_link == shortened_url).filter(Link.user_id == user.get('user_id')).first()
+    url = db.query(Link).filter(or_(Link.custom_link == shortened_url, Link.short_link == shortened_url)).filter(Link.user_id == user.get('user_id')).first()
 
     if not url:
-        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Shortened link not found")
+        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Invalid link")
     
     analysis = LinkAnalysis(
         link = url.link,
@@ -251,12 +256,12 @@ async def delete_link(user : user_dependency , db : db_dependency , shortened_ur
     if not user:
         raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
     
-    url = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(Link.short_link == shortened_url).first()
+    url = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(or_(Link.custom_link == shortened_url, Link.short_link == shortened_url)).first()
 
     if not url:
-        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Shortened link not found!")
+        raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Invalid link!")
     
-    db.query(Link).filter(Link.user_id == user.get('user_id')).filter(Link.short_link == shortened_url).delete()
+    db.query(Link).filter(Link.user_id == user.get('user_id')).filter(or_(Link.custom_link == shortened_url, Link.short_link == shortened_url)).delete()
 
     db.commit()
 
