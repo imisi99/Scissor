@@ -11,14 +11,19 @@ from datetime import datetime
 from io import BytesIO
 from fastapi.responses import StreamingResponse, RedirectResponse
 from ipwhois import IPWhois
+from .utils import *
 import validators
-from cachetools import TTLCache, cached 
+from functools import lru_cache
+from slowapi import _rate_limit_exceeded_handler, Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 import hashlib
 from urllib.parse import urlunparse, urlparse
 import qrcode
 import socket
 
-link = APIRouter()
+
+limiter = Limiter(key_func= get_remote_address)
 
 class LinkAnalysis(BaseModel):
     link : str
@@ -27,8 +32,9 @@ class LinkAnalysis(BaseModel):
     clicks : int
     last_clicked : Optional[datetime]
     click_location : list[str]
-
-#Database initialization
+'''
+Database initialization
+'''
 def get_db():
     db = begin()
     try:
@@ -38,7 +44,10 @@ def get_db():
 
 db_dependency = Annotated[Session, Depends(get_db)]
 user_dependency = Annotated[str, Depends(get_user)]
-#Url validation and shortening
+
+'''
+Url validation and shortening
+'''
 def validate_url(url):
     return validators.url(url)
 
@@ -49,7 +58,9 @@ def shorten_url(url):
     short_link = f"{prefix}{short_code}"
     return short_link
 
-#Qrcode generation
+'''
+Qrcode generation
+'''
 def generate_qr_code( url : str) -> bytes:
     qr = qrcode.QRCode(
         version= 1,
@@ -66,22 +77,34 @@ def generate_qr_code( url : str) -> bytes:
     img.save(img_io, format = 'PNG')
     img_io.seek(0)
     return img_io.read()
+'''
+caching
 
-#caching
-cache = TTLCache(maxsize= 300, ttl= 300)
+rate limiting
+'''
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+'''
+This route is to create a shortened link but it would fail to do so it the provided url is not valid
+validility of a url entails that the url must be secured {https://} it must have a domain name (scissor.com)
+'''
 #Url shortening
 @link.post("/shorten-link", status_code= status.HTTP_201_CREATED, response_description= {201 : {'description' : 'The user is requesting to shorten the link'}})
-# @cached(cache, key = lambda user, db, url_link: user.get('user_id'))
-async def shorten_link(user : user_dependency, db: db_dependency, url_link: str):
+@limiter.limit("5/hour")
+async def shorten_link(request : Request, user : user_dependency, db: db_dependency, url_link: str):
     if not user:
         raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
     
+    existing_link = await db.query(Link).filter(Link.user_id == user.get('user_id')).filter(Link.link == url_link).first()
+    if existing_link:
+        return f'Link already exists: {existing_link.short_link}'
     if not validate_url(url_link):
         raise HTTPException(status_code= status.HTTP_400_BAD_REQUEST, detail= "The Url that you provided is invalid")
 
     short_code = shorten_url(url_link)
-    existing_code = db.query(Link).filter(Link.short_link == short_code).first()
+    existing_code = await db.query(Link).filter(Link.short_link == short_code).first()
 
     if existing_code is not None:
         raise HTTPException(status_code= status.HTTP_400_BAD_REQUEST, detail= "An error occured, please try again")
@@ -96,20 +119,27 @@ async def shorten_link(user : user_dependency, db: db_dependency, url_link: str)
     db.add(data)
     db.commit()
     db.refresh(data)
+
     return short_code
 
+
 #Get original url link from shortened link
-@link.get("/shorten-link/get-original", status_code= status.HTTP_200_OK, response_description= {200 : {'description' : 'The user is requesting the original link from the shortenened version'}})
-async def getting_original_link(user : user_dependency, db : db_dependency, shortened_url_link : str):
-    if not user:
-        raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
-    
+@lru_cache(maxsize= 128)
+def get_original_url(user_id : str, shortened_url_link : str, db: Session):
     url_link = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(or_(Link.custom_link == shortened_url_link, Link.short_link == shortened_url_link)).first()
 
     if url_link is None:
         raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "The link that you provided has no original link linked to it")
     
     return url_link.link
+
+@link.get("/shorten-link/get-original", status_code= status.HTTP_200_OK, response_description= {200 : {'description' : 'The user is requesting the original link from the shortenened version'}})
+async def getting_original_link(user : user_dependency, db : db_dependency, shortened_url_link : str):
+    if not user:
+        raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
+    
+    original_link = get_original_url(user.get("user_id"), shortened_url_link, db)
+    return {'original_link': original_link}
 
 
 #url history
@@ -127,7 +157,11 @@ async def link_history(user: user_dependency, db: db_dependency):
 
     return link_data
 
-#Customizing url
+
+'''
+This route is to customize the url provided but only the domain name can be changed
+The cutomized url can also be used to perform the functionality of the original shortened url generated 
+'''
 @link.put("/shorten-link/customize", status_code= status.HTTP_201_CREATED, response_description= {201 : {'description' : 'The user is requesting the customize the shortenened version of the link'}})
 async def customize_url(user : user_dependency, db: db_dependency, shortened_url : str, domain_name : str = Body()):
     if not user:
@@ -156,9 +190,14 @@ async def customize_url(user : user_dependency, db: db_dependency, shortened_url
 
     return f"Url has been customized successfully: {url_link.custom_link}"
 
-#qrcode generation
+
+'''
+This route is to generate the QR code for a particular link but not to view it
+To do so you would have to use the route below
+'''
 @link.put("/qrcode-generate", status_code= status.HTTP_201_CREATED, response_description= {201 : {'description' : 'The user is requesting the customize the to generate a qr code for the shortenened version of the link'}})
-async def generate_Qr_code_image(user : user_dependency, db: db_dependency, shortened_url : str):
+@limiter.limit("5/hour")
+async def generate_Qr_code_image(request : Request, user : user_dependency, db: db_dependency, shortened_url : str):
     if not user:
         raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
     
@@ -176,7 +215,10 @@ async def generate_Qr_code_image(user : user_dependency, db: db_dependency, shor
 
     return "The Qrcode for this link has been generated successfully."
 
-#get qrcode
+'''
+This route is used to get or view the qrcode that should have been generated using the route above
+
+'''
 @link.get("/qrcode", status_code= status.HTTP_200_OK, response_description= {200 :{'description' : 'The user is requesting for already generated qrcode for shortened url'}})
 async def get_qr_code(user : user_dependency, db : db_dependency, shortened_url : str):
     if not user:
@@ -197,8 +239,13 @@ async def get_qr_code(user : user_dependency, db : db_dependency, shortened_url 
 
     return StreamingResponse(qr_code_io, media_type= "image/png")
 
-#Ananlyzing
+
+'''
+This route is to analysis the link and the method to do so
+It defines the method and also a way to view the analysis
+'''
 @link.get("/analysis/", status_code= status.HTTP_302_FOUND, response_description= {302 : {'description' : 'This endpoint is used to redirect the shortened link to menitor the clicks aspect'}})
+@limiter.limit("5/minute")
 async def redirect_to_original(db: db_dependency, shortened_url : str , request : Request):
     url = db.query(Link).filter(or_(Link.short_link == shortened_url, Link.custom_link == shortened_url)).first()
     if not url:
@@ -250,7 +297,10 @@ async def analysis_for_link(db: db_dependency, user : user_dependency, shortened
 
     return analysis
 
-#delete url
+
+'''
+A route for the user to delete a link
+'''
 @link.delete('/delete/', status_code= status.HTTP_204_NO_CONTENT, response_description= {204 : {'description' : 'User has decided to delete a shortened link'}})
 async def delete_link(user : user_dependency , db : db_dependency , shortened_url : str):
     if not user:

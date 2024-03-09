@@ -1,11 +1,10 @@
 from fastapi import FastAPI
 from .routers.user import user
-from .routers.link import link
+from .routers.link import link 
+from .routers.utils import *
 from .schemas.database import engine, begin
 from .schemas import model_db as model_db
 
-
-app = FastAPI()
 
 app.include_router(user, prefix="/user", tags= ['User'])
 app.include_router(link, prefix= "/link", tags= ['Link'])

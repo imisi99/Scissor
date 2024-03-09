@@ -4,6 +4,7 @@ from pydantic import BaseModel, EmailStr, Field, validator
 from starlette import status
 from ..schemas.database import begin
 from sqlalchemy.orm import Session
+from .utils import *
 from ..schemas.model_db import User, Link
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
@@ -11,7 +12,7 @@ from jose import jwt, JWTError
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import re
 
-user = APIRouter()
+
 #Database
 def get_db():
     db =begin()
