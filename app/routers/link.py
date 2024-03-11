@@ -90,21 +90,17 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 This route is to create a shortened link but it would fail to do so it the provided url is not valid
 validility of a url entails that the url must be secured {https://} it must have a domain name (scissor.com)
 '''
-#Url shortening
-@link.post("/shorten-link", status_code= status.HTTP_201_CREATED, response_description= {201 : {'description' : 'The user is requesting to shorten the link'}})
-@limiter.limit("5/hour")
-async def shorten_link(request : Request, user : user_dependency, db: db_dependency, url_link: str):
-    if not user:
-        raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
-    
-    existing_link = await db.query(Link).filter(Link.user_id == user.get('user_id')).filter(Link.link == url_link).first()
+#caching the response in shortening
+@lru_cache(maxsize= 200)
+def shorten_link_cache(user_id : str, url_link : str, db: Session):
+    existing_link =  db.query(Link).filter(Link.user_id ==user_id).filter(Link.link == url_link).first()
     if existing_link:
         return f'Link already exists: {existing_link.short_link}'
     if not validate_url(url_link):
         raise HTTPException(status_code= status.HTTP_400_BAD_REQUEST, detail= "The Url that you provided is invalid")
 
     short_code = shorten_url(url_link)
-    existing_code = await db.query(Link).filter(Link.short_link == short_code).first()
+    existing_code =  db.query(Link).filter(Link.short_link == short_code).first()
 
     if existing_code is not None:
         raise HTTPException(status_code= status.HTTP_400_BAD_REQUEST, detail= "An error occured, please try again")
@@ -112,7 +108,7 @@ async def shorten_link(request : Request, user : user_dependency, db: db_depende
     data = Link(
         link = url_link,
         short_link = short_code,
-        user_id = user.get('user_id')
+        user_id = user_id
 
     )
 
@@ -123,10 +119,19 @@ async def shorten_link(request : Request, user : user_dependency, db: db_depende
     return short_code
 
 
+@link.post("/shorten-link", status_code= status.HTTP_201_CREATED, response_description= {201 : {'description' : 'The user is requesting to shorten the link'}})
+@limiter.limit("5/hour")
+async def shorten_link(request : Request, user : user_dependency, db: db_dependency, url_link: str):
+    if not user:
+        raise HTTPException(status_code= status.HTTP_401_UNAUTHORIZED, detail= "Unauthorized user")
+    
+    response = shorten_link_cache((user.get('user_id')), url_link, db)
+    return {"Short Code":response }
+    
 #Get original url link from shortened link
 @lru_cache(maxsize= 128)
 def get_original_url(user_id : str, shortened_url_link : str, db: Session):
-    url_link = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(or_(Link.custom_link == shortened_url_link, Link.short_link == shortened_url_link)).first()
+    url_link = db.query(Link).filter(or_(Link.custom_link == shortened_url_link, Link.short_link == shortened_url_link)).filter(Link.user_id == user_id).first()
 
     if url_link is None:
         raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "The link that you provided has no original link linked to it")
