@@ -116,7 +116,7 @@ class UpdateDetails(BaseModel):
     @validator('username')
     def check_username(cls,value):
         if len(value) < 8 :
-            raise ValueError("Usernmae must be more than 8 characters long! ")
+            raise ValueError("Username must be more than 8 characters long! ")
         if len(value) > 15 :
             raise ValueError("Username must be less than 15 characters long!")
         

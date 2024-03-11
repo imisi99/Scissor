@@ -208,6 +208,9 @@ async def generate_Qr_code_image(request : Request, user : user_dependency, db: 
     
     url = db.query(Link).filter(Link.user_id == user.get('user_id')).filter(or_(Link.custom_link == shortened_url, Link.short_link == shortened_url)).first()
 
+    if url.qrcode is not None:
+        return 'There is a QR code already generated for this link'
+
     if not url:
         raise HTTPException(status_code= status.HTTP_404_NOT_FOUND, detail= "Invalid link!")
     
