@@ -1,32 +1,34 @@
 from .database import data
-from sqlalchemy import Column, String, Integer, ForeignKey, Float, DateTime, JSON, LargeBinary
+from sqlalchemy import Column, String, Integer, ForeignKey, DateTime, JSON, LargeBinary
 from sqlalchemy.orm import relationship
+
 
 class User(data):
 
     __tablename__ = "User"
 
-    id = Column(Integer, primary_key= True, index= True)
-    firstname = Column(String, nullable= False)
-    lastname = Column(String, nullable= False)
-    username = Column(String, unique= True, nullable= False)
-    email = Column(String, unique= True, nullable= False)
-    password = Column(String, nullable= False)
+    id = Column(Integer, primary_key=True, index=True)
+    firstname = Column(String, nullable=False)
+    lastname = Column(String, nullable=False)
+    username = Column(String, unique=True, nullable=False)
+    email = Column(String, unique=True, nullable=False)
+    password = Column(String, nullable=False)
 
-    links = relationship("Link", back_populates= "users")
+    links = relationship("Link", back_populates="users")
+
 
 class Link(data):
 
     __tablename__ = "Link"
 
-    id = Column(Integer, primary_key= True, index= True)
-    link = Column(String, nullable= False)
-    short_link = Column(String, nullable= False)
-    custom_link = Column(String, nullable= True)
-    qrcode = Column(LargeBinary, nullable= True)
-    clicks = Column(Integer, nullable= False, default= 0)
+    id = Column(Integer, primary_key=True, index=True)
+    link = Column(String, nullable=False)
+    short_link = Column(String, nullable=False)
+    custom_link = Column(String, nullable=True)
+    qrcode = Column(LargeBinary, nullable=True)
+    clicks = Column(Integer, nullable=False, default=0)
     user_id = Column(Integer, ForeignKey("User.id"))
-    last_clicked = Column(DateTime, nullable= True)
-    click_locations = Column(JSON, nullable= True)
+    last_clicked = Column(DateTime, nullable=True)
+    click_locations = Column(JSON, nullable=True)
 
-    users =relationship("User", back_populates= "links")
+    users = relationship("User", back_populates="links")
