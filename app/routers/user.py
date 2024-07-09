@@ -1,6 +1,6 @@
 from fastapi import Depends, HTTPException
 from typing import Annotated
-from pydantic import BaseModel, EmailStr, Field, validator
+from pydantic import BaseModel, EmailStr, Field, validator, field_validator
 from starlette import status
 from ..schemas.database import begin
 from sqlalchemy.orm import Session
@@ -84,7 +84,7 @@ class Signup(BaseModel):
     email: EmailStr
     password: str
 
-    @validator('password')
+    @field_validator('password')
     def check_password(cls, value):
         if len(value) < 8:
             raise ValueError("Password must contain at least 8 characters!")
@@ -95,7 +95,7 @@ class Signup(BaseModel):
 
         return value
 
-    @validator('username')
+    @field_validator('username')
     def check_username(cls, value):
         if len(value) < 8:
             raise ValueError("Username must be more than 8 characters long! ")
@@ -129,7 +129,7 @@ class UpdateDetails(BaseModel):
     email: EmailStr
     username: str
 
-    @validator('username')
+    @field_validator('username')
     def check_username(cls, value):
         if len(value) < 8:
             raise ValueError("Username must be more than 8 characters long! ")
@@ -160,7 +160,7 @@ class ForgotPassword(BaseModel):
     new_password: Annotated[str, Field()]
     confirm_password: Annotated[str, Field()]
 
-    @validator('new_password')
+    @field_validator('new_password')
     def check_password(cls, value):
         if len(value) < 8:
             raise ValueError("Password must contain at least 8 characters!")
